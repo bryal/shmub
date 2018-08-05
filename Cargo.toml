@@ -1,0 +1,6 @@
+[package]
+name = "shmub-server"
+version = "0.1.0"
+authors = ["bryal <96.bryal@gmail.com>"]
+
+[dependencies]
