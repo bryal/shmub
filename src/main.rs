@@ -1,7 +1,7 @@
 extern crate cpal;
 extern crate shmub_common;
 
-use cpal::{StreamData, UnknownTypeInputBuffer};
+use cpal::{Format, Sample, SampleFormat, SampleRate, StreamData, UnknownTypeInputBuffer};
 use shmub_common::*;
 use std::io::{self, BufRead, Write};
 use std::net::{Ipv4Addr, UdpSocket};
@@ -25,21 +25,19 @@ fn main() {
     println!("");
 
     let device = prompt_device();
-    let format = device
-        .default_input_format()
-        .expect("Failed to get input format");
-    println!(
-        "Selected device:\n  {}\n  {} channels, {}hz, {:?}",
-        device.name(),
-        format.channels,
-        format.sample_rate.0,
-        format.data_type
-    );
-
+    let format = Format {
+        channels: N_CHANNELS as u16,
+        sample_rate: SampleRate(SAMPLE_RATE),
+        data_type: SampleFormat::I16,
+    };
     let event_loop = cpal::EventLoop::new();
     let stream_id = event_loop
         .build_input_stream(&device, &format)
-        .expect("Failed to build input stream");
+        .expect(&format!(
+            "Failed to build input stream for device {} with format {:?}",
+            device.name(),
+            format
+        ));
     event_loop.play_stream(stream_id);
 
     let socket =
