@@ -5,6 +5,4 @@ authors = ["Johan Johansson <96.bryal@gmail.com>"]
 
 [dependencies]
 cpal = "0.8"
-chfft = "0.2"
-num-complex = "0.1"
-hound = "3.2"
+shmub-common = { path = "../shmub-common" }

@@ -1,18 +1,13 @@
-extern crate chfft;
 extern crate cpal;
-extern crate hound;
-extern crate num_complex;
+extern crate shmub_common;
 
-use std::io::{self, BufRead, Write};
-use std::time;
 use cpal::{StreamData, UnknownTypeInputBuffer};
-use chfft::RFft1D as Fft;
-use num_complex::Complex;
+use shmub_common::*;
+use std::io::{self, BufRead, Write};
+use std::net::{Ipv4Addr, UdpSocket};
 
-// Must be power of 2
-const SAMPLES_PER_PERIOD: usize = 4096;
-
-const COMPLEX_ZERO: Complex<f32> = Complex { re: 0.0, im: 0.0 };
+const SERVER_PORT: u16 = 14320;
+const CLIENT_PORT: u16 = 14321;
 
 macro_rules! print_flush {
     ($s: expr) => {
@@ -47,80 +42,46 @@ fn main() {
         .expect("Failed to build input stream");
     event_loop.play_stream(stream_id);
 
-    let mono_sample_rate = format.sample_rate.0 * format.channels as u32;
-    let start_time = time::Instant::now();
-    let mut buffer = [0.0f32; SAMPLES_PER_PERIOD];
-    let mut buffer_size = 0usize;
-    let mut processed_mono_samples = Vec::new();
-    // TODO: channel that streams one sample at a time
+    let socket =
+        UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), CLIENT_PORT)).expect("Failed to open socket");
+    let server = (Ipv4Addr::new(127, 0, 0, 1), SERVER_PORT);
+
+    let mut buf = [0i16; PACKET_N_PCM_SAMPLES];
+    let mut buf_i = 0usize;
     event_loop.run(move |_, data| {
-        if start_time.elapsed() > time::Duration::from_secs(6) {
-            after_event_loop(&processed_mono_samples, mono_sample_rate)
-        }
         let samples = to_f32_buffer(as_input_buffer(&data))
             .windows(format.channels as usize)
-            .map(|w| w.iter().sum::<f32>() / format.channels as f32)
-            .collect::<Vec<_>>();
+            .map(|w| {
+                ((w.iter().sum::<f32>() / format.channels as f32) * std::i16::MAX as f32).round()
+                    as i16
+            }).collect::<Vec<_>>();
         let mut i = 0;
         loop {
-            if buffer_size == SAMPLES_PER_PERIOD {
-                let processed = process_buffer(&buffer, mono_sample_rate);
-                processed_mono_samples.extend_from_slice(&processed);
-                buffer_size = 0;
-            }
-            if i == samples.len() {
+            if buf_i == PACKET_N_PCM_SAMPLES {
+                let packet = Packet::new(&buf).expect("Error creating packet");
+                socket
+                    .send_to(&packet.to_bytes()[..], server)
+                    .expect("Error sending packet");
+                buf_i = 0;
+            } else if i == samples.len() {
                 break;
             } else {
-                buffer[buffer_size] = samples[i];
-                buffer_size += 1;
+                buf[buf_i] = samples[i];
+                buf_i += 1;
                 i += 1;
             }
         }
     });
 }
 
-fn after_event_loop(samples: &[f32], sample_rate: u32) -> ! {
-    let spec = hound::WavSpec {
-        channels: 1,
-        sample_rate: sample_rate,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create("recording.wav", spec).unwrap();
-    for &sample in samples {
-        writer.write_sample(sample).unwrap();
-    }
-    writer.finalize().unwrap();
-
-    std::process::exit(0)
-}
-
-fn process_buffer(x: &[f32], sample_rate: u32) -> Vec<f32> {
-    let mut fft = Fft::new(x.len());
-    // X = fft(x)
-    let xx = fft.forward(x);
-    // w = freq(i)
-    let freq = |i| i as f32 * sample_rate as f32 / SAMPLES_PER_PERIOD as f32;
-    // Cutoff frequency
-    // w_c = sigma_f
-    let wc = 500.0;
-    // Gaussian filter
-    let gg = |w: f32| (-(w * w) / (2.0 * wc * wc)).exp();
-    // Y(w) = X(w) * G(w)
-    let yy = (0..xx.len())
-        .map(|i| xx[i] * gg(freq(i)))
-        .collect::<Vec<_>>();
-    // y = ifft(Y)
-    let y = fft.backward(&yy);
-    y
-}
-
 fn to_f32_buffer(unknown_buf: &UnknownTypeInputBuffer) -> Vec<f32> {
     match unknown_buf {
-        UnknownTypeInputBuffer::U16(buf) => buf.iter()
+        UnknownTypeInputBuffer::U16(buf) => buf
+            .iter()
             .map(|&x| x as f32 / std::u16::MAX as f32)
             .collect(),
-        UnknownTypeInputBuffer::I16(buf) => buf.iter()
+        UnknownTypeInputBuffer::I16(buf) => buf
+            .iter()
             .map(|&x| (x as f32 - std::i16::MIN as f32) / std::u16::MAX as f32)
             .collect(),
         UnknownTypeInputBuffer::F32(buf) => buf.to_vec(),
