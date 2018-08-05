@@ -44,15 +44,13 @@ fn main() {
         UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), CLIENT_PORT)).expect("Failed to open socket");
     let server = (Ipv4Addr::new(127, 0, 0, 1), SERVER_PORT);
 
-    let mut buf = [0i16; PACKET_N_PCM_SAMPLES];
+    let mut buf = [[0i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
     let mut buf_i = 0usize;
     event_loop.run(move |_, data| {
-        let samples = to_f32_buffer(as_input_buffer(&data))
-            .windows(format.channels as usize)
-            .map(|w| {
-                ((w.iter().sum::<f32>() / format.channels as f32) * std::i16::MAX as f32).round()
-                    as i16
-            }).collect::<Vec<_>>();
+        let samples = to_i16_buffer(as_input_buffer(&data))
+            .chunks(N_CHANNELS)
+            .map(|w| [w[0], w[1]])
+            .collect::<Vec<_>>();
         let mut i = 0;
         loop {
             if buf_i == PACKET_N_PCM_SAMPLES {
@@ -72,17 +70,11 @@ fn main() {
     });
 }
 
-fn to_f32_buffer(unknown_buf: &UnknownTypeInputBuffer) -> Vec<f32> {
+fn to_i16_buffer(unknown_buf: &UnknownTypeInputBuffer) -> Vec<i16> {
     match unknown_buf {
-        UnknownTypeInputBuffer::U16(buf) => buf
-            .iter()
-            .map(|&x| x as f32 / std::u16::MAX as f32)
-            .collect(),
-        UnknownTypeInputBuffer::I16(buf) => buf
-            .iter()
-            .map(|&x| (x as f32 - std::i16::MIN as f32) / std::u16::MAX as f32)
-            .collect(),
-        UnknownTypeInputBuffer::F32(buf) => buf.to_vec(),
+        UnknownTypeInputBuffer::U16(buf) => buf.iter().map(Sample::to_i16).collect(),
+        UnknownTypeInputBuffer::F32(buf) => buf.iter().map(Sample::to_i16).collect(),
+        UnknownTypeInputBuffer::I16(buf) => buf.to_vec(),
     }
 }
 
