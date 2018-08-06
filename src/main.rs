@@ -3,21 +3,10 @@ extern crate shmub_common;
 
 use cpal::{Format, Sample, SampleFormat, SampleRate, StreamData, UnknownTypeInputBuffer};
 use shmub_common::*;
-use std::io::{self, BufRead, Write};
 use std::net::{Ipv4Addr, UdpSocket};
 
 const SERVER_PORT: u16 = 14320;
 const CLIENT_PORT: u16 = 14321;
-
-macro_rules! print_flush {
-    ($s: expr) => {
-        print_flush!($s,);
-    };
-    ($format_str: expr, $($args: expr),*) => {
-        print!($format_str, $($args),*);
-        io::stdout().flush().unwrap();
-    };
-}
 
 fn main() {
     println!("Shmub Audio Client");
@@ -101,20 +90,4 @@ fn prompt_device() -> cpal::Device {
     } else {
         devices.remove(i)
     }
-}
-
-fn prompt_line() -> String {
-    print_flush!("> ");
-    read_line()
-}
-
-fn read_line() -> String {
-    let stdin = io::stdin();
-    let s = stdin
-        .lock()
-        .lines()
-        .next()
-        .unwrap()
-        .expect("Failed to read line from stdin");
-    s
 }
