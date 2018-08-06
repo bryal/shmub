@@ -1,7 +1,18 @@
 extern crate byteorder;
 
 use byteorder::{ByteOrder, LittleEndian};
+use std::io::{self, BufRead, Write};
 use std::mem::{size_of, transmute};
+
+macro_rules! print_flush {
+    ($s: expr) => {
+        print_flush!($s,);
+    };
+    ($format_str: expr, $($args: expr),*) => {
+        print!($format_str, $($args),*);
+        io::stdout().flush().unwrap();
+    };
+}
 
 pub const N_CHANNELS: usize = 2;
 pub const PACKET_PCM_SAMPLES_SIZE: usize = 512;
@@ -70,4 +81,20 @@ fn sample_singles_to_pairs(
 ) -> [[i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES] {
     // NOTE: I THINK this is portable?
     unsafe { transmute(samples) }
+}
+
+pub fn prompt_line() -> String {
+    print_flush!("> ");
+    read_line()
+}
+
+fn read_line() -> String {
+    let stdin = io::stdin();
+    let s = stdin
+        .lock()
+        .lines()
+        .next()
+        .unwrap()
+        .expect("Failed to read line from stdin");
+    s
 }
