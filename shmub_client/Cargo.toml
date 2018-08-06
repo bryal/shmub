@@ -5,4 +5,4 @@ authors = ["Johan Johansson <96.bryal@gmail.com>"]
 
 [dependencies]
 cpal = "0.8"
-shmub-common = { path = "../shmub_common" }
+shmub_common = { path = "../shmub_common" }
