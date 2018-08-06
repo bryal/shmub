@@ -5,4 +5,4 @@ authors = ["bryal <96.bryal@gmail.com>"]
 
 [dependencies]
 shmub-common = { path = "../shmub-common" }
-hound = "3.2"
+cpal = "0.8"
