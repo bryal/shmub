@@ -1,5 +1,5 @@
 [package]
-name = "shmub_audio_client"
+name = "shmub_client"
 version = "0.1.0"
 authors = ["Johan Johansson <96.bryal@gmail.com>"]
 
