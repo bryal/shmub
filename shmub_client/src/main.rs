@@ -31,7 +31,7 @@ fn main() {
 
     let socket =
         UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), CLIENT_PORT)).expect("Failed to open socket");
-    let server = (Ipv4Addr::new(127, 0, 0, 1), SERVER_PORT);
+    let server = (Ipv4Addr::new(192, 168, 0, 100), SERVER_PORT);
 
     let mut buf = [[0i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
     let mut buf_i = 0usize;
