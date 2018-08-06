@@ -1,8 +1,7 @@
 [package]
-name = "shmub-server"
+name = "shmub_common"
 version = "0.1.0"
 authors = ["bryal <96.bryal@gmail.com>"]
 
 [dependencies]
-shmub-common = { path = "../shmub-common" }
-cpal = "0.8"
+byteorder = "1.2"
