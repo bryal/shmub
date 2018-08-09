@@ -4,6 +4,8 @@ extern crate shmub_common;
 use cpal::{Format, SampleFormat, SampleRate, StreamData, UnknownTypeInputBuffer};
 use shmub_common::*;
 use std::net::{Ipv4Addr, UdpSocket};
+use std::sync::mpsc;
+use std::thread;
 
 const SERVER_PORT: u16 = 14320;
 const CLIENT_PORT: u16 = 14321;
@@ -46,30 +48,45 @@ fn main() {
         .expect("Failed to open socket");
     let server = (config.server_ip, config.server_port);
 
+    let (tx, rx) = mpsc::sync_channel(4);
+    thread::spawn(move || {
+        event_loop.run(move |_, data| {
+            let samples = to_i16_buffer(as_input_buffer(&data));
+            match tx.try_send(samples) {
+                Err(mpsc::TrySendError::Disconnected(_)) => panic!("channel disconnected"),
+                _ => (),
+            }
+        })
+    });
+
     let mut buf = [[0i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
     let mut buf_i = 0usize;
-    event_loop.run(move |_, data| {
-        let samples = to_i16_buffer(as_input_buffer(&data))
-            .chunks(N_CHANNELS)
-            .map(|w| [w[0], w[1]])
-            .collect::<Vec<_>>();
-        let mut i = 0;
-        loop {
+    let mut seq_index = 0;
+    let start = std::time::Instant::now();
+    loop {
+        let samples = rx.recv().expect("error receiving on channel");
+        let frames = samples.chunks(N_CHANNELS).map(|w| [w[0], w[1]]);
+        for frame in frames {
+            buf[buf_i] = frame;
+            buf_i += 1;
             if buf_i == PACKET_N_PCM_SAMPLES {
-                let packet = Packet::new(&buf).expect("Error creating packet");
+                let packet = Packet::new(seq_index, &buf).expect("Error creating packet");
                 socket
                     .send_to(&packet.to_bytes()[..], server)
                     .expect("Error sending packet");
+                seq_index += 1;
                 buf_i = 0;
-            } else if i == samples.len() {
-                break;
-            } else {
-                buf[buf_i] = samples[i];
-                buf_i += 1;
-                i += 1;
+                if seq_index % 1000 == 0 {
+                    let dt = start.elapsed();
+                    println!(
+                        "sending sample rate: {}hz",
+                        (seq_index as f64 * PACKET_N_PCM_SAMPLES as f64)
+                            / (dt.as_secs() as f64 + dt.subsec_millis() as f64 / 1000.0)
+                    )
+                }
             }
         }
-    });
+    }
 }
 
 fn to_i16_buffer(unknown_buf: &UnknownTypeInputBuffer) -> Vec<i16> {

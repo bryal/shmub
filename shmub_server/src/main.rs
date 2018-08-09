@@ -11,12 +11,17 @@ use std::thread;
 use std_semaphore::Semaphore;
 
 const PORT: u16 = 14320;
-const N_BUFFERED_SAMPLES: usize = 1024;
+const BUFFER_LATENCY_MS: usize = 45;
+const BUFFER_LATENCY_FRAMES: usize = (BUFFER_LATENCY_MS * SAMPLE_RATE as usize) / 1000;
+const SEQ_RESTART_MARGIN: u32 = 100;
 
 fn main() {
     println!("Shmub Audio Server");
     println!("Receive streamed UDP audio data and output to connected sound device.");
-    println!("");
+    println!(
+        "Buffer size: {} frames; Restart margin: {} frames",
+        BUFFER_LATENCY_FRAMES, SEQ_RESTART_MARGIN
+    );
     let device = prompt_device();
     let format = Format {
         channels: N_CHANNELS as u16,
@@ -33,9 +38,10 @@ fn main() {
         ));
     event_loop.play_stream(stream_id);
     let socket = UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), PORT)).expect("Failed to open socket");
+    println!("Listening to port {}", PORT);
 
     // Sample channel
-    let buffer = AudioBuffer::new(N_BUFFERED_SAMPLES);
+    let buffer = AudioBuffer::new(BUFFER_LATENCY_FRAMES);
     let buffer2 = buffer.clone();
 
     thread::spawn(move || {
@@ -50,10 +56,27 @@ fn main() {
         });
     });
 
+    let mut last_seq_index = 0;
     loop {
         let packet = recv_packet(&socket);
-        for sample in packet.samples()[..].iter().cloned() {
-            buffer.try_push_back(sample);
+        let is_newer = packet.seq_index > last_seq_index;
+        let probably_reset = packet.seq_index < last_seq_index.saturating_sub(SEQ_RESTART_MARGIN);
+        if is_newer || probably_reset {
+            if probably_reset {
+                println!(
+                    "probably reset. packet: {}, last: {}",
+                    packet.seq_index, last_seq_index
+                );
+            }
+            for sample in packet.samples[..].iter().cloned() {
+                buffer.try_push_back(sample);
+            }
+            last_seq_index = packet.seq_index;
+        } else {
+            println!(
+                "out of order packet. this: {}, last: {}",
+                packet.seq_index, last_seq_index
+            );
         }
     }
 }
@@ -80,8 +103,7 @@ impl AudioBuffer {
     ///
     /// Returns whether the sample was pushed
     fn try_push_back(&self, sample: Sample) -> bool {
-        let mut queue = self
-            .guarded_queue
+        let mut queue = self.guarded_queue
             .lock()
             .expect("Error locking queue mutex");
         if queue.len() < self.optimal_size * 2 {
@@ -94,24 +116,29 @@ impl AudioBuffer {
     }
 
     fn wait_for_buffering(&self) {
+        println!("buffering...");
         for _ in 0..self.optimal_size {
             self.available_samples.acquire();
         }
         for _ in 0..self.optimal_size {
             self.available_samples.release();
         }
+        println!("buffered!");
+        let queue = self.guarded_queue
+            .lock()
+            .expect("error locking queue mutex");
+        println!("buffer size after buffering: {}", queue.len());
     }
 
     /// If the buffer is not buffering to `optimal_size`, pop a sample
     fn pop_front(&self) -> Sample {
         self.available_samples.acquire();
         let (sample, wait) = {
-            let mut queue = self
-                .guarded_queue
+            let mut queue = self.guarded_queue
                 .lock()
                 .expect("error locking queue mutex");
             let sample = queue.pop_front().expect("no element to pop queue");
-            let wait = queue.len() == 1;
+            let wait = queue.len() <= 1;
             (sample, wait)
         };
         if wait {

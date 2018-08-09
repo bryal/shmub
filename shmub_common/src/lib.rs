@@ -16,41 +16,51 @@ macro_rules! print_flush {
 
 pub const N_CHANNELS: usize = 2;
 pub const PACKET_PCM_SAMPLES_SIZE: usize = 512;
-pub const PACKET_SIZE: usize = PACKET_PCM_SAMPLES_SIZE;
 pub const PCM_SAMPLE_SIZE: usize = size_of::<[i16; N_CHANNELS]>();
 pub const PACKET_N_PCM_SAMPLES: usize = PACKET_PCM_SAMPLES_SIZE / PCM_SAMPLE_SIZE;
-pub const SAMPLE_RATE: u32 = 48000;
+pub const SEQ_INDEX_SIZE: usize = size_of::<u32>();
+pub const PACKET_SIZE: usize = SEQ_INDEX_SIZE + PACKET_PCM_SAMPLES_SIZE;
+pub const SAMPLE_RATE: u32 = 44100;
 
 pub type Sample = [i16; N_CHANNELS];
 
 // Packet format:
-// | SAMPLES |
-// SAMPLES: 512 bytes of 128 pairs of le i16 pcm samples with sample rate of 48khz.
-//          512 bytes seems like a good size to work well with UDP.
+// | INDEX | SAMPLES |
+//
+// INDEX: Sequence index / package number. UInt32 (4 bytes). Increased
+//        by one for every package sent.  Can be used by server to not
+//        play a packet that arrived behind a newer packet.
+//
+// SAMPLES: 512 bytes of 128 pairs of le i16 pcm samples with sample
+//          rate of 48khz. 512 bytes seems like a good size to work
+//          well with UDP.
 
 pub struct Packet {
-    samples: [[i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES],
+    pub seq_index: u32,
+    pub samples: [[i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES],
 }
 
 impl Packet {
-    pub fn new(samples: &[[i16; N_CHANNELS]]) -> Result<Packet, ()> {
+    pub fn new(seq_index: u32, samples: &[[i16; N_CHANNELS]]) -> Result<Packet, ()> {
         if samples.len() != PACKET_N_PCM_SAMPLES {
             Err(())
         } else {
             let mut array = [[0; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
             array.copy_from_slice(samples);
-            Ok(Packet { samples: array })
+            Ok(Packet {
+                seq_index,
+                samples: array,
+            })
         }
-    }
-
-    pub fn samples(&self) -> &[[i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES] {
-        &self.samples
     }
 
     pub fn to_bytes(&self) -> [u8; PACKET_SIZE] {
         let mut bytes = [0; PACKET_SIZE];
+        let mut i = 0;
+        LittleEndian::write_u32(&mut bytes[i..], self.seq_index);
+        i += SEQ_INDEX_SIZE;
         let samples = sample_pairs_as_singles(&self.samples);
-        LittleEndian::write_i16_into(&samples[..], &mut bytes);
+        LittleEndian::write_i16_into(&samples[..], &mut bytes[i..]);
         bytes
     }
 
@@ -62,9 +72,13 @@ impl Packet {
                 buf.len()
             ))
         } else {
+            let mut i = 0;
+            let seq_index = LittleEndian::read_u32(&buf[i..]);
+            i += SEQ_INDEX_SIZE;
             let mut samples = [0i16; PACKET_N_PCM_SAMPLES * N_CHANNELS];
-            LittleEndian::read_i16_into(buf, &mut samples[..]);
+            LittleEndian::read_i16_into(&buf[i..], &mut samples[..]);
             Ok(Packet {
+                seq_index,
                 samples: sample_singles_to_pairs(samples),
             })
         }
