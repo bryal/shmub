@@ -21,6 +21,8 @@ pub const PCM_SAMPLE_SIZE: usize = size_of::<[i16; N_CHANNELS]>();
 pub const PACKET_N_PCM_SAMPLES: usize = PACKET_PCM_SAMPLES_SIZE / PCM_SAMPLE_SIZE;
 pub const SAMPLE_RATE: u32 = 48000;
 
+pub type Sample = [i16; N_CHANNELS];
+
 // Packet format:
 // | SAMPLES |
 // SAMPLES: 512 bytes of 128 pairs of le i16 pcm samples with sample rate of 48khz.

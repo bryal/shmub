@@ -1,17 +1,30 @@
 extern crate cpal;
 extern crate shmub_common;
 
-use cpal::{Format, Sample, SampleFormat, SampleRate, StreamData, UnknownTypeInputBuffer};
+use cpal::{Format, SampleFormat, SampleRate, StreamData, UnknownTypeInputBuffer};
 use shmub_common::*;
 use std::net::{Ipv4Addr, UdpSocket};
 
 const SERVER_PORT: u16 = 14320;
 const CLIENT_PORT: u16 = 14321;
 
+struct Config {
+    server_ip: Ipv4Addr,
+    server_port: u16,
+    client_port: u16,
+}
+
 fn main() {
     println!("Shmub Audio Client");
     println!("Capture audio from an input device and stream to a Shmub server");
-    println!("");
+
+    let config = match parse_args() {
+        Ok(c) => c,
+        Err(exe) => {
+            println!("Usage: {} SERVER_IP SERVER_PORT CLIENT_PORT", exe);
+            return;
+        }
+    };
 
     let device = prompt_device();
     let format = Format {
@@ -29,9 +42,9 @@ fn main() {
         ));
     event_loop.play_stream(stream_id);
 
-    let socket =
-        UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), CLIENT_PORT)).expect("Failed to open socket");
-    let server = (Ipv4Addr::new(192, 168, 0, 100), SERVER_PORT);
+    let socket = UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), config.client_port))
+        .expect("Failed to open socket");
+    let server = (config.server_ip, config.server_port);
 
     let mut buf = [[0i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
     let mut buf_i = 0usize;
@@ -61,8 +74,8 @@ fn main() {
 
 fn to_i16_buffer(unknown_buf: &UnknownTypeInputBuffer) -> Vec<i16> {
     match unknown_buf {
-        UnknownTypeInputBuffer::U16(buf) => buf.iter().map(Sample::to_i16).collect(),
-        UnknownTypeInputBuffer::F32(buf) => buf.iter().map(Sample::to_i16).collect(),
+        UnknownTypeInputBuffer::U16(buf) => buf.iter().map(cpal::Sample::to_i16).collect(),
+        UnknownTypeInputBuffer::F32(buf) => buf.iter().map(cpal::Sample::to_i16).collect(),
         UnknownTypeInputBuffer::I16(buf) => buf.to_vec(),
     }
 }
@@ -89,5 +102,30 @@ fn prompt_device() -> cpal::Device {
         panic!("Undefined device index");
     } else {
         devices.remove(i)
+    }
+}
+
+fn parse_args() -> Result<Config, String> {
+    let args = std::env::args().collect::<Vec<_>>();
+    if args.len() > 1 {
+        let server_ip = args[1].parse().expect("Invalid server IP");
+        let mut server_port = SERVER_PORT;
+        let mut client_port = CLIENT_PORT;
+        if args.len() > 2 {
+            server_port = args[2].parse().expect("Invalid server port");
+            if args.len() == 4 {
+                client_port = args[3].parse().expect("Invalid client port")
+            } else {
+                println!("Unexpected argument `{}`", args[3]);
+                return Err(args[0].clone());
+            }
+        }
+        Ok(Config {
+            server_ip,
+            server_port,
+            client_port,
+        })
+    } else {
+        Err(args[0].clone())
     }
 }
