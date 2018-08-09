@@ -6,3 +6,4 @@ authors = ["bryal <96.bryal@gmail.com>"]
 [dependencies]
 shmub_common = { path = "../shmub_common" }
 cpal = "0.8"
+std-semaphore = "0.1.0"
