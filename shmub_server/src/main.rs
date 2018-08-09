@@ -45,14 +45,17 @@ fn main() {
     let buffer2 = buffer.clone();
 
     thread::spawn(move || {
+        let mut prev_frame = [0, 0];
         event_loop.run(move |_, data| {
             let mut out_buf = get_i16_buffer(as_output_buffer(data));
-            for out_sample in out_buf.chunks_mut(N_CHANNELS) {
-                let sample = buffer2.pop_front();
-                for (out, &value) in out_sample.iter_mut().zip(&sample[..]) {
+            for out_frame in out_buf.chunks_mut(N_CHANNELS) {
+                let frame = buffer2.try_pop_front().unwrap_or(prev_frame);
+                for (out, &value) in out_frame.iter_mut().zip(&frame[..]) {
                     *out = value;
                 }
+                prev_frame = frame;
             }
+            buffer2.wait_for_buffering_if_empty();
         });
     });
 
@@ -124,10 +127,19 @@ impl AudioBuffer {
             self.available_samples.release();
         }
         println!("buffered!");
-        let queue = self.guarded_queue
-            .lock()
-            .expect("error locking queue mutex");
-        println!("buffer size after buffering: {}", queue.len());
+    }
+
+    fn wait_for_buffering_if_empty(&self) {
+        let wait = {
+            let queue = self.guarded_queue
+                .lock()
+                .expect("error locking queue mutex");
+            let wait = queue.len() <= 10;
+            wait
+        };
+        if wait {
+            self.wait_for_buffering()
+        }
     }
 
     /// If the buffer is not buffering to `optimal_size`, pop a sample
@@ -145,6 +157,17 @@ impl AudioBuffer {
             self.wait_for_buffering()
         }
         sample
+    }
+
+    fn try_pop_front(&self) -> Option<Sample> {
+        let mut queue = self.guarded_queue
+            .lock()
+            .expect("error locking queue mutex");
+        if queue.len() > 0 {
+            queue.pop_front()
+        } else {
+            None
+        }
     }
 }
 
