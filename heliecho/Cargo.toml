@@ -1,0 +1,12 @@
+[package]
+name = "heliecho"
+version = "0.1.0"
+authors = ["bryal <96.bryal@gmail.com>"]
+
+[dependencies]
+shmub_common = { path = "../shmub_common" }
+cpal = "0.8"
+chfft = "0.2"
+num-complex = "0.1"
+serial = "0.4"
+palette = "0.4"
