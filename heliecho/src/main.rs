@@ -40,30 +40,12 @@ fn main() {
     let led_tx = init_write_thread(led_device);
 
     let audio_device = prompt_audio_device();
-    let format = Format {
-        channels: N_CHANNELS as u16,
-        sample_rate: SampleRate(SAMPLE_RATE),
-        data_type: SampleFormat::F32,
-    };
-    let event_loop = cpal::EventLoop::new();
-    let stream_id = event_loop
-        .build_input_stream(&audio_device, &format)
-        .expect(&format!(
-            "Failed to build input stream for device {} with format {:?}",
-            audio_device.name(),
-            format
-        ));
-    event_loop.play_stream(stream_id);
-    let (samples_tx, samples_rx) = mpsc::sync_channel(4);
-    thread::spawn(move || {
-        event_loop.run(move |_, data| {
-            let samples = to_f32_buffer(as_input_buffer(&data));
-            match samples_tx.try_send(samples) {
-                Err(mpsc::TrySendError::Disconnected(_)) => panic!("channel disconnected"),
-                _ => (),
-            }
-        })
-    });
+    let samples_rx = init_audio_thread(audio_device);
+
+    audio_to_leds_loop(samples_rx, led_tx);
+}
+
+fn audio_to_leds_loop(samples_rx: mpsc::Receiver<Vec<f32>>, led_tx: mpsc::SyncSender<Rgb8>) {
     let mut buf = [[0f32; N_CHANNELS]; FRAMES_PER_PERIOD];
     let mut buf_i = 0usize;
     let mut prev_print_t = time::Instant::now();
@@ -123,6 +105,34 @@ fn init_write_thread(mut serial_con: serial::SystemPort) -> mpsc::SyncSender<Rgb
     tx
 }
 
+fn init_audio_thread(audio_device: cpal::Device) -> mpsc::Receiver<Vec<f32>> {
+    let format = Format {
+        channels: N_CHANNELS as u16,
+        sample_rate: SampleRate(SAMPLE_RATE),
+        data_type: SampleFormat::F32,
+    };
+    let event_loop = cpal::EventLoop::new();
+    let stream_id = event_loop
+        .build_input_stream(&audio_device, &format)
+        .expect(&format!(
+            "Failed to build input stream for device {} with format {:?}",
+            audio_device.name(),
+            format
+        ));
+    event_loop.play_stream(stream_id);
+    let (samples_tx, samples_rx) = mpsc::sync_channel(4);
+    thread::spawn(move || {
+        event_loop.run(move |_, data| {
+            let samples = to_f32_buffer(as_input_buffer(&data));
+            match samples_tx.try_send(samples) {
+                Err(mpsc::TrySendError::Disconnected(_)) => panic!("channel disconnected"),
+                _ => (),
+            }
+        })
+    });
+    samples_rx
+}
+
 fn write_frames_as_colors(
     stereo_data: &[[f32; 2]; FRAMES_PER_PERIOD],
     led_tx: &mpsc::SyncSender<Rgb8>,
@@ -141,7 +151,7 @@ fn write_frames_as_colors(
         val = 0.0;
     }
     let hsv = Hsv::new(hue, sat, val);
-    let mut rgb = Rgb::from(hsv);
+    let rgb = Rgb::from(hsv);
     let rgb8 = rgb.into_format::<u8>();
     led_tx
         .send(rgb8)
@@ -234,7 +244,7 @@ fn smooth_color(from: Rgb8, to: Rgb8) -> Rgb8 {
     let hue = from_hue + 0.04 * hue_diff;
     let sat = 1.0;
     let from_val = from_hsv.value;
-    let mut val_diff = to_hsv.value - from_val;
+    let val_diff = to_hsv.value - from_val;
     let val = from_val + 0.2 * val_diff;
     Rgb::from(Hsv::new(hue, sat, val)).into_format::<u8>()
 }
