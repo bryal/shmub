@@ -15,7 +15,7 @@ macro_rules! print_flush {
 }
 
 pub const N_CHANNELS: usize = 2;
-pub const PACKET_PCM_SAMPLES_SIZE: usize = 512;
+pub const PACKET_PCM_SAMPLES_SIZE: usize = 1200;
 pub const PCM_SAMPLE_SIZE: usize = size_of::<[i16; N_CHANNELS]>();
 pub const PACKET_N_PCM_SAMPLES: usize = PACKET_PCM_SAMPLES_SIZE / PCM_SAMPLE_SIZE;
 pub const SEQ_INDEX_SIZE: usize = size_of::<u32>();
