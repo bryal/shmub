@@ -11,7 +11,7 @@ use std::thread;
 use std_semaphore::Semaphore;
 
 const PORT: u16 = 14320;
-const BUFFER_LATENCY_MS: usize = 45;
+const BUFFER_LATENCY_MS: usize = 25;
 const BUFFER_LATENCY_FRAMES: usize = (BUFFER_LATENCY_MS * SAMPLE_RATE as usize) / 1000;
 const SEQ_RESTART_MARGIN: u32 = 100;
 
@@ -19,8 +19,8 @@ fn main() {
     println!("Shmub Audio Server");
     println!("Receive streamed UDP audio data and output to connected sound device.");
     println!(
-        "Buffer size: {} frames; Restart margin: {} frames",
-        BUFFER_LATENCY_FRAMES, SEQ_RESTART_MARGIN
+        "Buffer size: {} frames; Buffer time: ~{}ms; Restart margin: {} frames",
+        BUFFER_LATENCY_FRAMES, BUFFER_LATENCY_MS, SEQ_RESTART_MARGIN
     );
     let device = prompt_device();
     let format = Format {
@@ -40,7 +40,6 @@ fn main() {
     let socket = UdpSocket::bind((Ipv4Addr::new(0, 0, 0, 0), PORT)).expect("Failed to open socket");
     println!("Listening to port {}", PORT);
 
-    // Sample channel
     let buffer = AudioBuffer::new(BUFFER_LATENCY_FRAMES);
     let buffer2 = buffer.clone();
 
@@ -126,7 +125,6 @@ impl AudioBuffer {
         for _ in 0..self.optimal_size {
             self.available_samples.release();
         }
-        println!("buffered!");
     }
 
     fn wait_for_buffering_if_empty(&self) {
