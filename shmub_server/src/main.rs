@@ -64,6 +64,12 @@ fn main() {
         let is_newer = packet.seq_index > last_seq_index;
         let probably_reset = packet.seq_index < last_seq_index.saturating_sub(SEQ_RESTART_MARGIN);
         if is_newer || probably_reset {
+            if !packet.seq_index == last_seq_index + 1 {
+                println!(
+                    "indirect successor. packet: {}, last: {}",
+                    packet.seq_index, last_seq_index
+                )
+            }
             if probably_reset {
                 println!(
                     "probably reset. packet: {}, last: {}",
