@@ -1,8 +1,9 @@
 #![feature(slice_patterns)]
+#![feature(const_fn)]
 
 extern crate chfft;
 extern crate cpal;
-extern crate num_complex;
+extern crate num;
 extern crate palette;
 extern crate serial;
 extern crate shmub_common;
@@ -12,6 +13,8 @@ use std::{io, thread};
 use std::io::prelude::*;
 use std::sync::mpsc;
 use std::time;
+use std::ops::{Add, Div, Range};
+use num::One;
 use chfft::RFft1D as Fft;
 use cpal::{Format, SampleFormat, SampleRate, StreamData, UnknownTypeInputBuffer};
 use shmub_common::*;
@@ -23,11 +26,21 @@ type Rgb8 = Srgb<u8>;
 const SAMPLE_RATE: u32 = 48000;
 // Must be power of 2
 const FRAMES_PER_PERIOD: usize = 1024;
-const MAX_DB_DECAY_PER_PERIOD: f32 = 1.0 - 0.1 * FRAMES_PER_PERIOD as f32 / SAMPLE_RATE as f32;
-const MAX_FREQ: f32 = 2800.0;
+const MAX_AMPS_DECAY_PER_PERIOD: f32 = 1.0 - 0.03 * FRAMES_PER_PERIOD as f32 / SAMPLE_RATE as f32;
 const ADALIGHT_BAUDRATE: serial::BaudRate = serial::Baud115200;
 const N_LEDS: usize = 49;
-const BLACK_LEVEL: f32 = 0.15;
+const BLACK_LEVEL: f32 = 0.2;
+
+const BASS_FREQS: Range<f32> = 20.0..340.0;
+const MID_FREQS: Range<f32> = 340.0..2600.0;
+const HIGH_FREQS: Range<f32> = 2600.0..5500.0;
+
+const BASS_BINS: Range<usize> =
+    freq_to_bin(BASS_FREQS.start) as usize..freq_to_bin(BASS_FREQS.end) as usize;
+const MID_BINS: Range<usize> =
+    freq_to_bin(MID_FREQS.start) as usize..freq_to_bin(MID_FREQS.end) as usize;
+const HIGH_BINS: Range<usize> =
+    freq_to_bin(HIGH_FREQS.start) as usize..freq_to_bin(HIGH_FREQS.end) as usize;
 
 fn main() {
     println!("Heliecho");
@@ -48,8 +61,7 @@ fn main() {
 fn audio_to_leds_loop(samples_rx: mpsc::Receiver<Vec<f32>>, led_tx: mpsc::SyncSender<Rgb8>) {
     let mut buf = [[0f32; N_CHANNELS]; FRAMES_PER_PERIOD];
     let mut buf_i = 0usize;
-    let mut prev_print_t = time::Instant::now();
-    let mut max_db = 1.0;
+    let mut frames_to_colors = FramesToColors::new();
     println!("");
     loop {
         let samples = samples_rx.recv().expect("error receiving on channel");
@@ -58,11 +70,7 @@ fn audio_to_leds_loop(samples_rx: mpsc::Receiver<Vec<f32>>, led_tx: mpsc::SyncSe
             buf[buf_i] = frame;
             buf_i += 1;
             if buf_i == FRAMES_PER_PERIOD {
-                write_frames_as_colors(&buf, &led_tx, &mut max_db, &mut prev_print_t);
-                max_db *= MAX_DB_DECAY_PER_PERIOD;
-                if max_db < 1.0 {
-                    max_db = 1.0;
-                }
+                frames_to_colors.convert_and_send(&buf, &led_tx);
                 buf_i = 0;
             }
         }
@@ -85,10 +93,8 @@ fn init_write_thread(mut serial_con: serial::SystemPort) -> mpsc::SyncSender<Rgb
         color_buf[3] = count_high;
         color_buf[4] = count_low;
         color_buf[5] = count_high ^ count_low ^ 0x55; // Checksum
-        let mut prev_color = Rgb::new(0, 0, 0);
         loop {
-            let recv_color = rx.try_recv().unwrap_or(prev_color);
-            let color = smooth_color(prev_color, recv_color);
+            let color = rx.recv().expect("Error receiving RGB value on channel");
             for n in 0..N_LEDS {
                 color_buf[6 + 3 * n] = color.red;
                 color_buf[6 + 3 * n + 1] = color.green;
@@ -99,7 +105,6 @@ fn init_write_thread(mut serial_con: serial::SystemPort) -> mpsc::SyncSender<Rgb
                 Ok(_) => println!("Failed to write all bytes of RGB data"),
                 Err(e) => println!("Failed to write RGB data, {}", e),
             }
-            prev_color = color;
         }
     });
     tx
@@ -133,121 +138,154 @@ fn init_audio_thread(audio_device: cpal::Device) -> mpsc::Receiver<Vec<f32>> {
     samples_rx
 }
 
-fn write_frames_as_colors(
-    stereo_data: &[[f32; 2]; FRAMES_PER_PERIOD],
-    led_tx: &mpsc::SyncSender<Rgb8>,
-    max_db: &mut f32,
-    prev_print_t: &mut time::Instant,
-) {
-    let mut bin_amps_db = stereo_pcm_to_db_bins(stereo_data);
-    apply_amplification(&mut bin_amps_db);
-    let (freq, amp) = max_amp(&bin_amps_db);
-    let level = norm_db(amp, max_db);
-    let x = ((freq - 20.0).max(0.0) / MAX_FREQ - 1.0).min(0.0);
-    let hue = (1.0 - x.powi(2)) * 240.0;
-    let sat = 1.0;
-    let mut val = level.powf(4.0);
-    if val < BLACK_LEVEL {
-        val = 0.0;
-    }
-    let hsv = Hsv::new(hue, sat, val);
-    let rgb = Rgb::from(hsv);
-    let rgb8 = rgb.into_format::<u8>();
-    led_tx
-        .send(rgb8)
-        .expect("Error sending RGB value over channel");
+struct FramesToColors {
+    max_bass: f32,
+    max_mid: f32,
+    max_high: f32,
+    prev_print_t: time::Instant,
+    prev_rgb: Srgb<f32>,
+}
 
-    let dt = prev_print_t.elapsed();
-    if dt > time::Duration::from_millis(100) {
-        *prev_print_t = time::Instant::now();
-        print!("\rf: {:6.0}, db: {:4.1}, vol: {:1.3}", freq, amp, level,);
-        io::stdout().flush().expect("Error flushing stdout");
+impl FramesToColors {
+    fn new() -> Self {
+        FramesToColors {
+            max_bass: 0.01,
+            max_mid: 0.01,
+            max_high: 0.01,
+            prev_print_t: time::Instant::now(),
+            prev_rgb: Srgb::new(0.0, 0.0, 0.0),
+        }
+    }
+
+    fn convert_and_send(
+        &mut self,
+        stereo_data: &[[f32; 2]; FRAMES_PER_PERIOD],
+        led_tx: &mpsc::SyncSender<Rgb8>,
+    ) {
+        let bin_amps = stereo_frames_to_bin_amps(stereo_data);
+        let bass = &bin_amps[BASS_BINS];
+        let mids = &bin_amps[MID_BINS];
+        let highs = &bin_amps[HIGH_BINS];
+        let avg_bass = average(bass.iter().cloned());
+        let avg_mid = average(mids.iter().cloned());
+        let avg_high = average(highs.iter().cloned());
+        let bass_lvl = normalize_amplitude(avg_bass, &mut self.max_bass);
+        let mid_lvl = normalize_amplitude(avg_mid, &mut self.max_mid);
+        let high_lvl = normalize_amplitude(avg_high, &mut self.max_high);
+        let red = bass_lvl.powf(2.0);
+        let green = mid_lvl.powf(1.1);
+        let blue = high_lvl.powf(1.2);
+        let rgb = Srgb::new(red, green, blue);
+        let smoothed = self.smooth_color(rgb);
+        let saturated = {
+            let desat = Hsv::from(smoothed);
+            let sat = Hsv::new(desat.hue, 1.0, desat.value);
+            Rgb::from(sat)
+        };
+        let rgb8 = saturated.into_format::<u8>();
+        led_tx
+            .send(rgb8)
+            .expect("Error sending RGB value on channel");
+        self.decay_max_amps();
+        self.print_status(bass_lvl, mid_lvl, high_lvl);
+    }
+
+    fn smooth_color(&mut self, to: Srgb<f32>) -> Srgb<f32> {
+        let from = self.prev_rgb;
+        let r = 0.4 * from.red + 0.6 * to.red;
+        let g = 0.7 * from.green + 0.3 * to.green;
+        let b = 0.5 * from.blue + 0.5 * to.blue;
+        let new = Srgb::new(r, g, b);
+        self.prev_rgb = new;
+        new
+    }
+
+    fn decay_max_amps(&mut self) {
+        self.max_bass = (self.max_bass * MAX_AMPS_DECAY_PER_PERIOD).max(0.01);
+        let min_mid = self.max_bass / 4.5;
+        self.max_mid = (self.max_mid * MAX_AMPS_DECAY_PER_PERIOD).max(min_mid);
+        let min_high = self.max_mid / 2.0;
+        self.max_high = (self.max_high * MAX_AMPS_DECAY_PER_PERIOD).max(min_high);
+    }
+
+    fn print_status(&mut self, bass_lvl: f32, mid_lvl: f32, high_lvl: f32) {
+        let dt = self.prev_print_t.elapsed();
+        if dt > time::Duration::from_millis(100) {
+            self.prev_print_t = time::Instant::now();
+            print!(
+                "\rbass: {:4.2}*{:5.2}, mid: {:4.2}*{:5.2}, high: {:4.2}*{:5.2}",
+                bass_lvl, self.max_bass, mid_lvl, self.max_mid, high_lvl, self.max_high
+            );
+            io::stdout().flush().expect("Error flushing stdout");
+        }
     }
 }
 
-/// bin == index of fft where there is a corresponding frequence
-fn stereo_pcm_to_db_bins(
-    stereo_data: &[[f32; 2]; FRAMES_PER_PERIOD],
+/// bin == index of fft where there is a corresponding frequency
+fn stereo_frames_to_bin_amps(
+    stereo_frames: &[[f32; 2]; FRAMES_PER_PERIOD],
 ) -> [f32; (FRAMES_PER_PERIOD >> 1) + 1] {
-    let mut avg_data = [0.0; FRAMES_PER_PERIOD];
-    for (i, &[l, r]) in stereo_data.iter().enumerate() {
-        avg_data[i] = (l + r) / 2.0;
+    let mut mono_samples = [0.0; FRAMES_PER_PERIOD];
+    for (i, &[l, r]) in stereo_frames.iter().enumerate() {
+        mono_samples[i] = (l + r) / 2.0;
     }
     let mut fft = Fft::new(FRAMES_PER_PERIOD);
-    // X = fft(x)
-    let bin_amps_complex = fft.forward(&avg_data[..]);
-    let mut bin_amps_db = [0.0f32; (FRAMES_PER_PERIOD >> 1) + 1];
+    let bin_amps_complex = fft.forward(&mono_samples[..]);
+    let mut bin_amps = [0.0f32; (FRAMES_PER_PERIOD >> 1) + 1];
     for (i, &c) in bin_amps_complex.iter().enumerate() {
-        let amp = (c.re.powi(2) + c.im.powi(2)).sqrt();
-        bin_amps_db[i] = 20.0 * amp.log(10.0);
+        bin_amps[i] = (c.re.powi(2) + c.im.powi(2)).sqrt();
     }
-    bin_amps_db
+    bin_amps
 }
 
-fn apply_amplification(amps: &mut [f32]) {
-    for (i, a) in amps.iter_mut().enumerate() {
-        let f = bin_to_freq(i as f32);
-        let end = 1.2;
-        *a *= 1.0 + (end * (f / MAX_FREQ).min(1.0));
-    }
-}
-
-fn bin_to_freq(i: f32) -> f32 {
+const fn bin_to_freq(i: f32) -> f32 {
     (i * SAMPLE_RATE as f32) / FRAMES_PER_PERIOD as f32
 }
 
-/// Normalize a decibel value to [0, 1]
-fn norm_db(db: f32, max_db: &mut f32) -> f32 {
-    if db > *max_db {
-        *max_db = db;
-    }
-    let x = db / *max_db;
-    if x > 1.0 {
-        1.0
-    } else {
-        (1.0 - x) * x + x * (1.0 / (1.0 + (-10.0 * (x - 0.5)).exp()))
-    }
+const fn freq_to_bin(f: f32) -> f32 {
+    f * FRAMES_PER_PERIOD as f32 / SAMPLE_RATE as f32
 }
 
-fn max_amp(amps: &[f32]) -> (f32, f32) {
-    let mut max_bin = 0;
-    let mut max_amp = 0.0;
-    for (i, &a) in amps.iter().enumerate() {
-        if a > max_amp {
-            max_bin = i;
-            max_amp = a;
-        }
+fn average<T, I: IntoIterator<Item = T>>(xs: I) -> T
+where
+    T: Add<T, Output = T>,
+    T: Div<T, Output = T>,
+    T: One,
+{
+    let mut it = xs.into_iter();
+    let mut sum = it.next()
+        .expect("Can't calculate average of empty sequence");
+    let mut n = T::one();
+    for x in it {
+        sum = sum + x;
+        n = n + T::one();
     }
-    let mut snd_bin = 0;
-    let mut snd_amp = 0.0;
-    for (i, &a) in amps.iter().enumerate() {
-        if i != max_bin && a > snd_amp {
-            snd_bin = i;
-            snd_amp = a;
-        }
-    }
-    let bin = if snd_bin == max_bin + 1 || (max_bin > 0 && snd_bin == max_bin - 1) {
-        (snd_bin as f32 * snd_amp + max_bin as f32 * max_amp) / (snd_amp + max_amp)
-    } else {
-        max_bin as f32
-    };
-    (bin_to_freq(bin), max_amp)
+    sum / n
 }
 
-/// Go faster towards light, slower towards dark
-fn smooth_color(from: Rgb8, to: Rgb8) -> Rgb8 {
-    let from_hsv = Hsv::from(from.into_format::<f32>());
-    let to_hsv = Hsv::from(to.into_format::<f32>());
-    let from_hue = from_hsv.hue.to_positive_degrees();
-    let to_hue = to_hsv.hue.to_positive_degrees();
-    let hue_diff = to_hue - from_hue;
-    let hue = from_hue + 0.04 * hue_diff;
-    let sat = 1.0;
-    let from_val = from_hsv.value;
-    let val_diff = to_hsv.value - from_val;
-    let val = from_val + 0.2 * val_diff;
-    Rgb::from(Hsv::new(hue, sat, val)).into_format::<u8>()
+/// Normalize a frequency amplitude to [0, 1]
+fn normalize_amplitude(amp: f32, max_amp: &mut f32) -> f32 {
+    let amp_abs = amp.abs();
+    if amp_abs > *max_amp {
+        *max_amp = amp_abs;
+    }
+    amp_abs / *max_amp
 }
+
+// /// Go faster towards light, slower towards dark
+// fn smooth_color(from: Rgb8, to: Rgb8) -> Rgb8 {
+//     let from_hsv = Hsv::from(from.into_format::<f32>());
+//     let to_hsv = Hsv::from(to.into_format::<f32>());
+//     let from_hue = from_hsv.hue.to_positive_degrees();
+//     let to_hue = to_hsv.hue.to_positive_degrees();
+//     let hue_diff = to_hue - from_hue;
+//     let hue = from_hue + 0.04 * hue_diff;
+//     let sat = 1.0;
+//     let from_val = from_hsv.value;
+//     let val_diff = to_hsv.value - from_val;
+//     let val = from_val + 0.2 * val_diff;
+//     Rgb::from(Hsv::new(hue, sat, val)).into_format::<u8>()
+// }
 
 fn to_f32_buffer(unknown_buf: &UnknownTypeInputBuffer) -> Vec<f32> {
     match unknown_buf {
