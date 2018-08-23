@@ -62,7 +62,6 @@ fn main() {
     let mut buf = [[0i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
     let mut buf_i = 0usize;
     let mut seq_index = 0;
-    let start = std::time::Instant::now();
     loop {
         let samples = rx.recv().expect("error receiving on channel");
         let frames = samples.chunks(N_CHANNELS).map(|w| [w[0], w[1]]);
@@ -76,14 +75,6 @@ fn main() {
                     .expect("Error sending packet");
                 seq_index += 1;
                 buf_i = 0;
-                if seq_index % 1000 == 0 {
-                    let dt = start.elapsed();
-                    println!(
-                        "sending sample rate: {}hz",
-                        (seq_index as f64 * PACKET_N_PCM_SAMPLES as f64)
-                            / (dt.as_secs() as f64 + dt.subsec_millis() as f64 / 1000.0)
-                    )
-                }
             }
         }
     }
