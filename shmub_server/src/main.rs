@@ -14,7 +14,7 @@ use std_semaphore::Semaphore;
 use std::time;
 
 const PORT: u16 = 14320;
-const BUFFER_LATENCY_MS: usize = 1000;
+const BUFFER_LATENCY_MS: usize = 30;
 const BUFFER_LATENCY_FRAMES: usize = (BUFFER_LATENCY_MS * SAMPLE_RATE as usize) / 1000;
 const SEQ_RESTART_MARGIN: u32 = 100;
 
