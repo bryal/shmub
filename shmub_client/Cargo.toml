@@ -4,5 +4,5 @@ version = "0.1.0"
 authors = ["Johan Johansson <96.bryal@gmail.com>"]
 
 [dependencies]
-cpal = "0.8"
+cpal = "0.8.2"
 shmub_common = { path = "../shmub_common" }
