@@ -1,3 +1,5 @@
+#![feature(duration_float)]
+
 extern crate cpal;
 extern crate shmub_common;
 extern crate std_semaphore;
@@ -5,13 +7,14 @@ extern crate std_semaphore;
 use cpal::{Format, OutputBuffer, SampleFormat, SampleRate, StreamData, UnknownTypeOutputBuffer};
 use shmub_common::*;
 use std::collections::VecDeque;
-use std::net::{Ipv4Addr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std_semaphore::Semaphore;
+use std::time;
 
 const PORT: u16 = 14320;
-const BUFFER_LATENCY_MS: usize = 25;
+const BUFFER_LATENCY_MS: usize = 1000;
 const BUFFER_LATENCY_FRAMES: usize = (BUFFER_LATENCY_MS * SAMPLE_RATE as usize) / 1000;
 const SEQ_RESTART_MARGIN: u32 = 100;
 
@@ -58,9 +61,11 @@ fn main() {
         });
     });
 
+    let mut samples_per_s = 0;
+    let mut t0 = time::Instant::now();
     let mut last_seq_index = 0;
     loop {
-        let packet = recv_packet(&socket);
+        let (packet, origin) = recv_packet(&socket);
         let is_newer = packet.seq_index > last_seq_index;
         let probably_reset = packet.seq_index < last_seq_index.saturating_sub(SEQ_RESTART_MARGIN);
         if is_newer || probably_reset {
@@ -77,9 +82,17 @@ fn main() {
                 );
             }
             for sample in packet.samples[..].iter().cloned() {
+                samples_per_s += 1;
                 buffer.try_push_back(sample);
             }
             last_seq_index = packet.seq_index;
+            let t1 = time::Instant::now();
+            let t = t1.duration_since(t0).as_float_secs();
+            if t >= 1.0 {
+                t0 = t1;
+                println!("Samples per second: {}", samples_per_s as f64 / t);
+                samples_per_s = 0;
+            }
         } else {
             println!(
                 "out of order packet. this: {}, last: {}",
@@ -190,12 +203,15 @@ fn as_output_buffer(data: StreamData) -> UnknownTypeOutputBuffer {
     }
 }
 
-fn recv_packet(socket: &UdpSocket) -> Packet {
+fn recv_packet(socket: &UdpSocket) -> (Packet, SocketAddr) {
     let mut buf = [0; PACKET_SIZE];
-    socket
+    let (_, origin) = socket
         .recv_from(&mut buf[..])
         .expect("Error receiving from socket");
-    Packet::parse(&buf[..]).expect("Error parsing packet")
+    (
+        Packet::parse(&buf[..]).expect("Error parsing packet"),
+        origin,
+    )
 }
 
 fn prompt_device() -> cpal::Device {
