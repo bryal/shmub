@@ -31,8 +31,8 @@ const ADALIGHT_BAUDRATE: serial::BaudRate = serial::Baud115200;
 const N_LEDS: usize = 49;
 const BLACK_LEVEL: f32 = 0.2;
 
-const BASS_FREQS: Range<f32> = 20.0..340.0;
-const MID_FREQS: Range<f32> = 340.0..2600.0;
+const BASS_FREQS: Range<f32> = 20.0..330.0;
+const MID_FREQS: Range<f32> = 330.0..2600.0;
 const HIGH_FREQS: Range<f32> = 2600.0..5500.0;
 
 const BASS_BINS: Range<usize> =
@@ -172,14 +172,16 @@ impl FramesToColors {
         let bass_lvl = normalize_amplitude(avg_bass, &mut self.max_bass);
         let mid_lvl = normalize_amplitude(avg_mid, &mut self.max_mid);
         let high_lvl = normalize_amplitude(avg_high, &mut self.max_high);
-        let red = bass_lvl.powf(2.0);
+        let red = bass_lvl.powf(1.8);
         let green = mid_lvl.powf(1.1);
         let blue = high_lvl.powf(1.2);
         let rgb = Srgb::new(red, green, blue);
         let smoothed = self.smooth_color(rgb);
         let saturated = {
             let desat = Hsv::from(smoothed);
-            let sat = Hsv::new(desat.hue, 1.0, desat.value);
+            let desaturated_saturation = desat.saturation;
+            let saturated_saturation = desaturated_saturation.powf(0.2);
+            let sat = Hsv::new(desat.hue, saturated_saturation, desat.value);
             Rgb::from(sat)
         };
         let rgb8 = saturated.into_format::<u8>();
@@ -201,7 +203,8 @@ impl FramesToColors {
     }
 
     fn decay_max_amps(&mut self) {
-        self.max_bass = (self.max_bass * MAX_AMPS_DECAY_PER_PERIOD).max(0.01);
+        let min_bass = 0.01;
+        self.max_bass = (self.max_bass * MAX_AMPS_DECAY_PER_PERIOD).max(min_bass);
         let min_mid = self.max_bass / 4.5;
         self.max_mid = (self.max_mid * MAX_AMPS_DECAY_PER_PERIOD).max(min_mid);
         let min_high = self.max_mid / 2.0;
