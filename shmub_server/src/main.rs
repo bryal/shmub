@@ -61,7 +61,7 @@ fn main() {
         });
     });
 
-    let mut samples_per_s = 0;
+    let mut frames_per_s = 0;
     let mut t0 = time::Instant::now();
     let mut last_seq_index = 0;
     loop {
@@ -81,17 +81,17 @@ fn main() {
                     packet.seq_index, last_seq_index
                 );
             }
-            for sample in packet.samples[..].iter().cloned() {
-                samples_per_s += 1;
-                buffer.try_push_back(sample);
+            for frame in packet.frames[..].iter().cloned() {
+                frames_per_s += 1;
+                buffer.try_push_back(frame);
             }
             last_seq_index = packet.seq_index;
             let t1 = time::Instant::now();
             let t = t1.duration_since(t0).as_float_secs();
-            if t >= 1.0 {
+            if t >= 5.0 {
                 t0 = t1;
-                println!("Samples per second: {}", samples_per_s as f64 / t);
-                samples_per_s = 0;
+                println!("Frames per second: {}", frames_per_s as f64 / t);
+                frames_per_s = 0;
             }
         } else {
             println!(
@@ -102,34 +102,38 @@ fn main() {
     }
 }
 
-/// A thread-safe buffer of samples that handles buffering in a way that makes sense for audio
+/// A thread-safe buffer of frames that handles buffering in a way that makes sense for audio
 #[derive(Clone)]
 struct AudioBuffer {
-    guarded_queue: Arc<Mutex<VecDeque<Sample>>>,
+    guarded_queue: Arc<Mutex<VecDeque<Frame>>>,
     optimal_size: usize,
-    available_samples: Arc<Semaphore>,
+    available_frames: Arc<Semaphore>,
 }
 
 impl AudioBuffer {
     fn new(optimal_size: usize) -> Self {
+        println!(
+            "Creating audio buffer with optimal size of {}",
+            optimal_size
+        );
         assert!(optimal_size > 1, "Optimal size must be greater than 1");
         AudioBuffer {
             guarded_queue: Arc::new(Mutex::new(VecDeque::with_capacity(optimal_size * 2))),
             optimal_size,
-            available_samples: Arc::new(Semaphore::new(0)),
+            available_frames: Arc::new(Semaphore::new(0)),
         }
     }
 
-    /// If the buffer is not unbuffering to `optimal_size`, push the sample
+    /// If the buffer is not unbuffering to `optimal_size`, push the frame
     ///
-    /// Returns whether the sample was pushed
-    fn try_push_back(&self, sample: Sample) -> bool {
+    /// Returns whether the frame was pushed
+    fn try_push_back(&self, frame: Frame) -> bool {
         let mut queue = self.guarded_queue
             .lock()
             .expect("Error locking queue mutex");
         if queue.len() < self.optimal_size * 2 {
-            queue.push_back(sample);
-            self.available_samples.release();
+            queue.push_back(frame);
+            self.available_frames.release();
             true
         } else {
             false
@@ -139,10 +143,10 @@ impl AudioBuffer {
     fn wait_for_buffering(&self) {
         println!("buffering...");
         for _ in 0..self.optimal_size {
-            self.available_samples.acquire();
+            self.available_frames.acquire();
         }
         for _ in 0..self.optimal_size {
-            self.available_samples.release();
+            self.available_frames.release();
         }
     }
 
@@ -159,29 +163,29 @@ impl AudioBuffer {
         }
     }
 
-    /// If the buffer is not buffering to `optimal_size`, pop a sample
-    fn pop_front(&self) -> Sample {
-        self.available_samples.acquire();
-        let (sample, wait) = {
+    /// If the buffer is not buffering to `optimal_size`, pop a frame
+    fn pop_front(&self) -> Frame {
+        self.available_frames.acquire();
+        let (frame, wait) = {
             let mut queue = self.guarded_queue
                 .lock()
                 .expect("error locking queue mutex");
-            let sample = queue.pop_front().expect("no element to pop queue");
+            let frame = queue.pop_front().expect("no element to pop queue");
             let wait = queue.len() <= 1;
-            (sample, wait)
+            (frame, wait)
         };
         if wait {
             self.wait_for_buffering()
         }
-        sample
+        frame
     }
 
-    fn try_pop_front(&self) -> Option<Sample> {
+    fn try_pop_front(&self) -> Option<Frame> {
         let mut queue = self.guarded_queue
             .lock()
             .expect("error locking queue mutex");
         if queue.len() > 0 {
-            self.available_samples.acquire();
+            self.available_frames.acquire();
             queue.pop_front()
         } else {
             None

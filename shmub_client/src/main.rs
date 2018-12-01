@@ -1,3 +1,5 @@
+#![feature(duration_float, type_ascription)]
+
 extern crate cpal;
 extern crate shmub_common;
 
@@ -5,7 +7,7 @@ use cpal::{Format, SampleFormat, SampleRate, StreamData, UnknownTypeInputBuffer}
 use shmub_common::*;
 use std::net::{Ipv4Addr, UdpSocket};
 use std::sync::mpsc;
-use std::thread;
+use std::{thread, time};
 
 const SERVER_PORT: u16 = 14320;
 const CLIENT_PORT: u16 = 14321;
@@ -50,16 +52,27 @@ fn main() {
 
     let (tx, rx) = mpsc::sync_channel(4);
     thread::spawn(move || {
+        let mut frames_per_s = 0;
+        let mut t0 = time::Instant::now();
         event_loop.run(move |_, data| {
             let samples = to_i16_buffer(as_input_buffer(&data));
+            let len = samples.len();
+            frames_per_s += samples.len() / N_CHANNELS;
             match tx.try_send(samples) {
                 Err(mpsc::TrySendError::Disconnected(_)) => panic!("channel disconnected"),
                 _ => (),
             }
+            let t1 = time::Instant::now();
+            let t = t1.duration_since(t0).as_float_secs();
+            if t >= 5.0 {
+                t0 = t1;
+                println!("Frames per second: {}", frames_per_s as f64 / t);
+                frames_per_s = 0;
+            }
         })
     });
 
-    let mut buf = [[0i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
+    let mut buf = [[0: Sample; N_CHANNELS]; PACKET_N_PCM_FRAMES];
     let mut buf_i = 0usize;
     let mut seq_index = 0;
     loop {
@@ -68,7 +81,7 @@ fn main() {
         for frame in frames {
             buf[buf_i] = frame;
             buf_i += 1;
-            if buf_i == PACKET_N_PCM_SAMPLES {
+            if buf_i == PACKET_N_PCM_FRAMES {
                 let packet = Packet::new(seq_index, &buf).expect("Error creating packet");
                 socket
                     .send_to(&packet.to_bytes()[..], server)

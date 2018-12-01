@@ -1,3 +1,5 @@
+#![feature(type_ascription)]
+
 extern crate byteorder;
 
 use byteorder::{ByteOrder, LittleEndian};
@@ -16,13 +18,15 @@ macro_rules! print_flush {
 
 pub const N_CHANNELS: usize = 2;
 pub const PACKET_PCM_SAMPLES_SIZE: usize = 1200;
-pub const PCM_SAMPLE_SIZE: usize = size_of::<[i16; N_CHANNELS]>();
+pub const PCM_SAMPLE_SIZE: usize = size_of::<Sample>();
 pub const PACKET_N_PCM_SAMPLES: usize = PACKET_PCM_SAMPLES_SIZE / PCM_SAMPLE_SIZE;
+pub const PACKET_N_PCM_FRAMES: usize = PACKET_N_PCM_SAMPLES / N_CHANNELS;
 pub const SEQ_INDEX_SIZE: usize = size_of::<u32>();
 pub const PACKET_SIZE: usize = SEQ_INDEX_SIZE + PACKET_PCM_SAMPLES_SIZE;
 pub const SAMPLE_RATE: u32 = 44100;
 
-pub type Sample = [i16; N_CHANNELS];
+pub type Sample = i16;
+pub type Frame = [Sample; N_CHANNELS];
 
 // Packet format:
 // | INDEX | SAMPLES |
@@ -31,25 +35,25 @@ pub type Sample = [i16; N_CHANNELS];
 //        by one for every package sent.  Can be used by server to not
 //        play a packet that arrived behind a newer packet.
 //
-// SAMPLES: 512 bytes of 128 pairs of le i16 pcm samples with sample
-//          rate of 48khz. 512 bytes seems like a good size to work
-//          well with UDP.
+// FRAMES: 512 bytes of 128 pairs of le i16 pcm samples with sample
+//         rate of 48khz. 512 bytes seems like a good size to work
+//         well with UDP.
 
 pub struct Packet {
     pub seq_index: u32,
-    pub samples: [[i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES],
+    pub frames: [Frame; PACKET_N_PCM_FRAMES],
 }
 
 impl Packet {
-    pub fn new(seq_index: u32, samples: &[[i16; N_CHANNELS]]) -> Result<Packet, ()> {
-        if samples.len() != PACKET_N_PCM_SAMPLES {
+    pub fn new(seq_index: u32, frames: &[Frame]) -> Result<Packet, ()> {
+        if frames.len() != PACKET_N_PCM_FRAMES {
             Err(())
         } else {
-            let mut array = [[0; N_CHANNELS]; PACKET_N_PCM_SAMPLES];
-            array.copy_from_slice(samples);
+            let mut array = [[0; N_CHANNELS]; PACKET_N_PCM_FRAMES];
+            array.copy_from_slice(frames);
             Ok(Packet {
                 seq_index,
-                samples: array,
+                frames: array,
             })
         }
     }
@@ -59,7 +63,7 @@ impl Packet {
         let mut i = 0;
         LittleEndian::write_u32(&mut bytes[i..], self.seq_index);
         i += SEQ_INDEX_SIZE;
-        let samples = sample_pairs_as_singles(&self.samples);
+        let samples = frames_as_samples(&self.frames);
         LittleEndian::write_i16_into(&samples[..], &mut bytes[i..]);
         bytes
     }
@@ -75,26 +79,22 @@ impl Packet {
             let mut i = 0;
             let seq_index = LittleEndian::read_u32(&buf[i..]);
             i += SEQ_INDEX_SIZE;
-            let mut samples = [0i16; PACKET_N_PCM_SAMPLES * N_CHANNELS];
+            let mut samples = [0: Sample; PACKET_N_PCM_SAMPLES];
             LittleEndian::read_i16_into(&buf[i..], &mut samples[..]);
             Ok(Packet {
                 seq_index,
-                samples: sample_singles_to_pairs(samples),
+                frames: samples_to_frames(samples),
             })
         }
     }
 }
 
-fn sample_pairs_as_singles(
-    samples: &[[i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES],
-) -> &[i16; PACKET_N_PCM_SAMPLES * N_CHANNELS] {
+fn frames_as_samples(frames: &[Frame; PACKET_N_PCM_FRAMES]) -> &[Sample; PACKET_N_PCM_SAMPLES] {
     // NOTE: I THINK this is portable?
-    unsafe { transmute(samples) }
+    unsafe { transmute(frames) }
 }
 
-fn sample_singles_to_pairs(
-    samples: [i16; PACKET_N_PCM_SAMPLES * N_CHANNELS],
-) -> [[i16; N_CHANNELS]; PACKET_N_PCM_SAMPLES] {
+fn samples_to_frames(samples: [i16; PACKET_N_PCM_SAMPLES]) -> [Frame; PACKET_N_PCM_FRAMES] {
     // NOTE: I THINK this is portable?
     unsafe { transmute(samples) }
 }
