@@ -168,6 +168,7 @@ impl AudioBuffer {
             .lock()
             .expect("error locking queue mutex");
         if queue.len() > 0 {
+            self.available_samples.acquire();
             queue.pop_front()
         } else {
             None
